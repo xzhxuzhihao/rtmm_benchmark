@@ -62,7 +62,8 @@ int main(int argc, char** argv)
 
     DISB::BenchmarkSuite benchmark;
     std::string jsonStr = readStringFromFile(argv[1]);
-    benchmark.init(jsonStr, helloClientFactory);
+	//std::cout << jsonStr << std::endl;
+    //benchmark.init(jsonStr, helloClientFactory);
     benchmark.run();
     Json::Value report = benchmark.generateReport();
     std::cout << report << std::endl;

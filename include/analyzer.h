@@ -5,6 +5,8 @@
 #include <chrono>
 #include <memory>
 #include <jsoncpp/json/json.h>
+#include <string>
+#include <vector>
 
 namespace DISB {
 
@@ -35,9 +37,18 @@ struct TimePoints
 class Record
 {
 public:
+	virtual ~Record(){}
     // avoid recursive dependency in shared_ptr
     Analyzer *analyzer;
     std::shared_ptr<TimePoints> timePoints;
+};
+
+/* chain  head or tear info */
+class Chain_Record : public Record{
+public:
+	int64_t s_num;
+    std::chrono::system_clock::time_point chain_start;
+    std::chrono::system_clock::time_point chain_end;
 };
 
 class Analyzer
@@ -60,25 +71,41 @@ public:
     virtual void consumeRecord(std::shared_ptr<Record> record) {}
     virtual Json::Value generateReport() = 0;
 
-    virtual void onPrepareInput(std::shared_ptr<Record> record) {}
     virtual void onPreprocess(std::shared_ptr<Record> record) {}
-    virtual void onCopyInput(std::shared_ptr<Record> record) {}
     virtual void onInfer(std::shared_ptr<Record> record) {}
-    virtual void onCopyOutput(std::shared_ptr<Record> record) {}
     virtual void onPostprocess(std::shared_ptr<Record> record) {}
 };
+
+/* [(chain_id, {(serial_num, record_time),...}),...] */
+using chain_map = std::vector<std::pair<int32_t, std::map<int64_t, std::chrono::system_clock::time_point>>>;
+using pair_map = std::pair<int32_t, std::map<int64_t, std::chrono::system_clock::time_point>>;
 
 class BasicAnalyzer: public Analyzer
 {
 private:
     std::chrono::nanoseconds standAloneLatency;
+
+	/* Chain info */
+	bool is_chain_head = false;
+	bool is_chain_tear = false;
+	std::vector<int32_t> chain_ids;
+	std::vector<std::string> chain_names;
+
     std::list<std::shared_ptr<Record>> records;
     std::chrono::system_clock::time_point beginTime;
     std::chrono::system_clock::time_point endTime;
 
 public:
-    void setStandAloneLatency(std::chrono::nanoseconds standAloneLatency);
+	void set_chain_element(bool _is_chain_head, bool _is_chain_tear, std::vector<int32_t>& chains_info, std::vector<std::string>& chain_names_);
+	void set_chain_head_records(std::chrono::system_clock::time_point now_time, std::shared_ptr<Chain_Record> chain_record, int64_t s_num);
+	void set_chain_tear_records(std::chrono::system_clock::time_point now_time, std::shared_ptr<Chain_Record> chain_record, int64_t s_num);
 
+    void setStandAloneLatency(std::chrono::nanoseconds standAloneLatency);
+	bool is_chain_head_inf();
+	bool is_chain_tear_inf();
+	std::shared_ptr<chain_map> get_chain_head_record();
+	std::shared_ptr<chain_map> get_chain_tear_record();
+	
     virtual void start(const std::chrono::system_clock::time_point &beginTime) override;
     virtual void stop(const std::chrono::system_clock::time_point &endTime) override;
     
@@ -86,6 +113,7 @@ public:
     virtual void consumeRecord(std::shared_ptr<Record> record) override;
     virtual Json::Value generateReport() override;
 };
+
 
 } // namespace DISB
 

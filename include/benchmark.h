@@ -11,8 +11,8 @@
 #include <string>
 #include <jsoncpp/json/json.h>
 
-#define WARMUP_TIME                         100
-#define STANDALONE_LATENCY_MEASURE_TIME     200
+#define WARMUP_TIME							20 
+#define STANDALONE_LATENCY_MEASURE_TIME     20
 #define DELAY_BEGIN_SECONDS                 5
 
 namespace DISB
@@ -48,14 +48,15 @@ public:
     ~BenchmarkSuite();
 
     void init(const std::string &configJsonStr,
-              std::shared_ptr<Client> clientFactory(const Json::Value &config),
+						  std::shared_ptr<DISB::Client> ClientFactory(const Json::Value &config, const Json::Value &config_extra),
               std::shared_ptr<Load> loadFactory(const Json::Value &config) = builtinLoadFactory);
     
     void init(const Json::Value &configJson,
-              std::shared_ptr<Client> clientFactory(const Json::Value &config),
+              std::shared_ptr<Client> ClientFactory(const Json::Value &config, const Json::Value &config_extra),
               std::shared_ptr<Load> loadFactory(const Json::Value &config) = builtinLoadFactory);
 
     void run(void loadCoordinator(const std::vector<LoadInfo> &loadInfos) = builtinLoadCoordinator);
+    Json::Value getChainRecordReport();
     Json::Value generateReport();
 };
 

@@ -3,10 +3,12 @@
 #include "disb_utils.h"
 
 #include <list>
+#include <iostream>
 #include <chrono>
 #include <memory>
 #include <fstream>
 #include <jsoncpp/json/json.h>
+#include <vector>
 
 namespace DISB {
 
@@ -36,9 +38,77 @@ std::shared_ptr<Record> Analyzer::produceRecordWrapper()
     return record;
 }
 
+void BasicAnalyzer::set_chain_element(bool _is_chain_head, bool _is_chain_tear, std::vector<int32_t>& chains_info, std::vector<std::string>& chain_names_){
+	if(_is_chain_head) is_chain_head = true;
+	if(_is_chain_tear) is_chain_tear = true;
+	
+	chain_ids = chains_info;	
+	chain_names = chain_names_;
+}
+
+void BasicAnalyzer:: set_chain_head_records(std::chrono::system_clock::time_point now_time, std::shared_ptr<Chain_Record> chain_record, int64_t s_num){
+	if(is_chain_head == true)
+		chain_record->chain_start = now_time;
+	chain_record->s_num = s_num;
+}
+
+void BasicAnalyzer:: set_chain_tear_records(std::chrono::system_clock::time_point now_time, std::shared_ptr<Chain_Record> chain_record, int64_t s_num){
+	if(is_chain_tear == true)
+		chain_record->chain_end = now_time;
+	chain_record->s_num = s_num;
+}
+
 void BasicAnalyzer::setStandAloneLatency(std::chrono::nanoseconds _standAloneLatency)
 {
     standAloneLatency = _standAloneLatency;
+}
+
+bool BasicAnalyzer::is_chain_head_inf(){
+	return is_chain_head;
+}
+
+bool BasicAnalyzer::is_chain_tear_inf(){
+	return is_chain_tear;
+}
+
+std::shared_ptr<chain_map> BasicAnalyzer::get_chain_head_record(){
+	if(!is_chain_head){
+        std::cerr << "[Error]: It isn't chain head\n";
+        exit(-1);
+	}
+
+	std::shared_ptr<chain_map> r_data =  std::make_shared<chain_map>();
+	for(auto id : chain_ids){
+		pair_map tmp_pair;
+		tmp_pair.first = id;
+		for(auto record : records){
+			std::shared_ptr<Chain_Record> chain_record = std::dynamic_pointer_cast<Chain_Record>(record);
+			tmp_pair.second[chain_record->s_num] = chain_record->chain_start;
+		}
+		r_data->push_back(tmp_pair);
+	}
+
+	return r_data;
+}
+
+std::shared_ptr<chain_map> BasicAnalyzer::get_chain_tear_record(){
+	if(!is_chain_tear){
+        std::cerr << "[Error]: It isn't chain tear\n";
+        exit(-1);
+	}
+
+	std::shared_ptr<chain_map> r_data =  std::make_shared<chain_map>();
+	for(auto id : chain_ids){
+		pair_map tmp_pair;
+		tmp_pair.first = id;
+		for(auto record : records){
+			std::shared_ptr<Chain_Record> chain_record = std::dynamic_pointer_cast<Chain_Record>(record);
+			tmp_pair.second[chain_record->s_num] = chain_record->chain_end;
+		}
+		r_data->push_back(tmp_pair);
+	}
+
+	return r_data;
 }
 
 void BasicAnalyzer::start(const system_clock::time_point &_beginTime)
@@ -54,7 +124,9 @@ void BasicAnalyzer::stop(const system_clock::time_point &_endTime)
 
 std::shared_ptr<Record> BasicAnalyzer::produceRecord()
 {
-    return std::make_shared<Record>();
+	if(is_chain_head || is_chain_tear)
+		return std::make_shared<Chain_Record>();
+	else return std::make_shared<Record>();
 }
 
 void BasicAnalyzer::consumeRecord(std::shared_ptr<Record> record)
@@ -67,21 +139,15 @@ Json::Value BasicAnalyzer::generateReport()
     // req/s
     double avgThroughput(0);
 
-    nanoseconds prepareInputLatencyAvg(0);
     nanoseconds preprocessLatencyAvg(0);
-    nanoseconds copyInputLatencyAvg(0);
     nanoseconds inferLatencyAvg(0);
-    nanoseconds copyOutputLatencyAvg(0);
     nanoseconds postprocessLatencyAvg(0);
     nanoseconds totalLatencyAvg(0);
 
     if (records.size() > 0) {
         // analysis records and calculate latency & throughput
-        nanoseconds prepareInputLatencySum(0);
         nanoseconds preprocessLatencySum(0);
-        nanoseconds copyInputLatencySum(0);
         nanoseconds inferLatencySum(0);
-        nanoseconds copyOutputLatencySum(0);
         nanoseconds postprocessLatencySum(0);
 
         // std::string name = records.front()->analyzer->getClient()->getName();
@@ -99,25 +165,16 @@ Json::Value BasicAnalyzer::generateReport()
             // f << "copy: " << (tps->copyOutputBegin - beginTime).count()/1000 << "us ~ " << (tps->copyOutputEnd - beginTime).count()/1000 << "us\n";
             // f << "postprocess: " << (tps->postprocessBegin - beginTime).count()/1000 << "us ~ " << (tps->postprocessEnd - beginTime).count()/1000 << "us\n\n\n";
             
-            prepareInputLatencySum += tps->prepareInputEnd - tps->prepareInputBegin;
             preprocessLatencySum += tps->preprocessEnd - tps->preprocessBegin;
-            copyInputLatencySum += tps->copyInputEnd - tps->copyInputBegin;
             inferLatencySum += tps->inferEnd - tps->inferBegin;
-            copyOutputLatencySum += tps->copyOutputEnd - tps->copyOutputBegin;
             postprocessLatencySum += tps->postprocessEnd - tps->postprocessBegin;
         }
 
-        prepareInputLatencyAvg = prepareInputLatencySum / records.size();
         preprocessLatencyAvg = preprocessLatencySum / records.size();
-        copyInputLatencyAvg = copyInputLatencySum / records.size();
         inferLatencyAvg = inferLatencySum / records.size();
-        copyOutputLatencyAvg = copyOutputLatencySum / records.size();
         postprocessLatencyAvg = postprocessLatencySum / records.size();
-        totalLatencyAvg = prepareInputLatencyAvg
-                        + preprocessLatencyAvg
-                        + copyInputLatencyAvg
+        totalLatencyAvg = preprocessLatencyAvg
                         + inferLatencyAvg
-                        + copyOutputLatencyAvg
                         + postprocessLatencyAvg;
 
         nanoseconds benchmarkTime(endTime - beginTime);
@@ -132,11 +189,8 @@ Json::Value BasicAnalyzer::generateReport()
 
     // measured in microseconds
     report["standAloneTotalLatency(us)"] = (Json::Value::Int64) standAloneLatency.count() / THOUSAND;
-    report["avgPrepareInputLatency(us)"] = (Json::Value::Int64) prepareInputLatencyAvg.count() / THOUSAND;
     report["avgPreprocessLatency(us)"] = (Json::Value::Int64) preprocessLatencyAvg.count() / THOUSAND;
-    report["avgCopyInputLatency(us)"] = (Json::Value::Int64) copyInputLatencyAvg.count() / THOUSAND;
     report["avgInferLatency(us)"] = (Json::Value::Int64) inferLatencyAvg.count() / THOUSAND;
-    report["avgCopyOutputLatency(us)"] = (Json::Value::Int64) copyOutputLatencyAvg.count() / THOUSAND;
     report["avgPostprocessLatency(us)"] = (Json::Value::Int64) postprocessLatencyAvg.count() / THOUSAND;
     report["avgTotalLatency(us)"] = (Json::Value::Int64) totalLatencyAvg.count() / THOUSAND;
     report["avgTotalLatencyIncrease(us)"] = (Json::Value::Int64) (totalLatencyAvg.count() - standAloneLatency.count()) / THOUSAND;

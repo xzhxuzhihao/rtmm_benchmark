@@ -17,29 +17,20 @@ namespace DISB
 
 struct StandAloneLatency
 {
-    std::chrono::nanoseconds prepareInputLatency;
     std::chrono::nanoseconds preprocessLatency;
-    std::chrono::nanoseconds copyInputLatency;
     std::chrono::nanoseconds inferLatency;
-    std::chrono::nanoseconds copyOutputLatency;
     std::chrono::nanoseconds postprocessLatency;
 
     StandAloneLatency():
-        prepareInputLatency(0),
         preprocessLatency(0),
-        copyInputLatency(0),
         inferLatency(0),
-        copyOutputLatency(0),
         postprocessLatency(0) {}
     
     std::chrono::nanoseconds sum()
     {
         std::chrono::nanoseconds latencySum(0);
-        latencySum += prepareInputLatency;
         latencySum += preprocessLatency;
-        latencySum += copyInputLatency;
         latencySum += inferLatency;
-        latencySum += copyOutputLatency;
         latencySum += postprocessLatency;
         return latencySum;
     }

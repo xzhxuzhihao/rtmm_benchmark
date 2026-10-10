@@ -1,0 +1,56 @@
+{
+    "time": 10,
+    "tasks":
+    [
+        {
+            "id": "yolov8s_chain2",
+            "load":
+            {
+                "type": "periodic",
+                "priority": 0,
+                "frequency": 10
+            },
+            "client":
+            {
+                "name": "yolov8s",
+				"engine_path": "/home/unasaw/hit_pro/rtmm_scheduler_2_0/benchmark/disb/samples/chainmodel/model_trt/yolov8s.engine"
+            },
+			"chain":
+			[
+				{
+					"chain_name":"chain2",
+					"chain_id":2,
+					"priority":-1,
+					"is_head":true,
+					"is_tear":false
+				}
+			]
+        },
+        {
+            "id": "DeiT-Tiny_chain2",
+            "load":
+            {
+                "type": "dependent",
+                "prev_task_ids":
+                [
+                    "yolov8s_chain2"
+                ]
+            },
+            "client":
+            {
+                "name": "DeiT-Tiny",
+				"engine_path":"/home/unasaw/hit_pro/rtmm_scheduler_2_0/benchmark/disb/samples/chainmodel/model_trt/deit_tiny.engine"
+            },
+			"chain":
+			[
+				{
+					"chain_name":"chain2",
+					"chain_id":2,
+					"priority":-1,
+					"is_head":false,
+					"is_tear":true
+				}
+			]
+        }
+    ]
+}

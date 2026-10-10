@@ -5,6 +5,8 @@
 #include <sstream>
 #include <fstream>
 #include <jsoncpp/json/json.h>
+#include <iostream>
+#include <iomanip>
 
 std::string readStringFromFile(const std::string &filename)
 {
@@ -104,4 +106,20 @@ std::string timepointToString(const std::chrono::system_clock::time_point &timep
     strftime(timeStr, 25, "%Y-%m-%d %H:%M:%S", &localTime);
  
     return std::string(timeStr);
+}
+
+// 封装带毫秒的时间戳生成函数
+std::string log_timestamp() {
+    using namespace std::chrono;
+
+    auto now = system_clock::now();
+    auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+
+    auto timer = system_clock::to_time_t(now);
+    std::tm bt = *std::localtime(&timer);
+
+    std::ostringstream oss;
+    oss << std::put_time(&bt, "[%Y-%m-%d %H:%M:%S")
+        << '.' << std::setfill('0') << std::setw(3) << ms.count() << "] ";
+    return oss.str();
 }

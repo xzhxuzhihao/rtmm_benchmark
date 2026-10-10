@@ -1,6 +1,9 @@
 #include "benchmark.h"
 #include "disb_utils.h"
 
+#include <algorithm>
+#include <jsoncpp/json/value.h>
+#include <string>
 #include <vector>
 #include <thread>
 #include <memory>
@@ -44,11 +47,25 @@ void BenchmarkTask::inferOnce()
         std::shared_ptr<DependentClient> dependentClient = std::dynamic_pointer_cast<DependentClient>(client);
         assert(dependentLoad);
         assert(dependentClient);
-
-        dependentClient->consumePrevResults(dependentLoad->getPrevResults());
-    }
+		const std::map<std::string, std::shared_ptr<InferResult>> &prevResults = dependentLoad->getPrevResults();
+		std::shared_ptr<InferResult> pre_one_result = prevResults.begin()->second;
+		int64_t s_num_dep = pre_one_result->resultSerialNumber;
+		client->set_s_num(s_num_dep);
+	
+        dependentClient->consumePrevResults(prevResults);
+    }else{
+		int64_t s_num_pre = client->get_s_num();
+		client->set_s_num(s_num_pre+1);
+	}
 
     std::vector<std::shared_ptr<Record>> records = client->produceRecords();
+
+	if(std::dynamic_pointer_cast<Chain_Record>(records.front()) != nullptr){
+		std::shared_ptr<Chain_Record> chain_record = std::dynamic_pointer_cast<Chain_Record>(records.front());
+		std::chrono::system_clock::time_point now_time = system_clock::now();
+		client->set_chain_head_records(now_time, chain_record, client->get_s_num());	
+	}
+
     // records should always be not empty
     // because a basic analyzer will always be there, producing at least one record
     // for safety's sake, here will check records' length
@@ -56,23 +73,11 @@ void BenchmarkTask::inferOnce()
                                              ? std::make_shared<TimePoints>()
                                              : records.front()->timePoints;
 
-    // trigger analyers' prepare input event and record execution time
-    for (auto record : records) record->analyzer->onPrepareInput(record);
-    timePoints->prepareInputBegin = system_clock::now();
-    client->prepareInput();
-    timePoints->prepareInputEnd = system_clock::now();
-
     // trigger analyers' preprocess event and record execution time
     for (auto record : records) record->analyzer->onPreprocess(record);
     timePoints->preprocessBegin = system_clock::now();
     client->preprocess();
     timePoints->preprocessEnd = system_clock::now();
-
-    // trigger analyers' copy input event and record execution time
-    for (auto record : records) record->analyzer->onCopyInput(record);
-    timePoints->copyInputBegin = system_clock::now();
-    client->copyInput();
-    timePoints->copyInputEnd = system_clock::now();
 
     // trigger analyers' infer event and record execution time
     for (auto record : records) record->analyzer->onInfer(record);
@@ -80,17 +85,17 @@ void BenchmarkTask::inferOnce()
     client->infer();
     timePoints->inferEnd = system_clock::now();
 
-    // trigger analyers' copy output event and record execution time
-    for (auto record : records) record->analyzer->onCopyOutput(record);
-    timePoints->copyOutputBegin = system_clock::now();
-    client->copyOutput();
-    timePoints->copyOutputEnd = system_clock::now();
-
     // trigger analyers' postprocess event and record execution time
     for (auto record : records) record->analyzer->onPostprocess(record);
     timePoints->postprocessBegin = system_clock::now();
     client->postprocess();
     timePoints->postprocessEnd = system_clock::now();
+
+	if(std::dynamic_pointer_cast<Chain_Record>(records.front()) != nullptr){
+		std::shared_ptr<Chain_Record> chain_record = std::dynamic_pointer_cast<Chain_Record>(records.front());
+		std::chrono::system_clock::time_point now_time = system_clock::now();
+		client->set_chain_tear_records(now_time, chain_record, client->get_s_num());	
+	}
 
     // give the record back to the analyzer produced it
     for (auto record : records) record->analyzer->consumeRecord(record);
@@ -133,7 +138,7 @@ BenchmarkSuite::~BenchmarkSuite()
 }
 
 void BenchmarkSuite::init(const std::string &configJsonStr,
-                          std::shared_ptr<Client> clientFactory(const Json::Value &config),
+						  std::shared_ptr<DISB::Client> clientFactory(const Json::Value &config, const Json::Value &config_extra),
                           std::shared_ptr<Load> loadFactory(const Json::Value &config))
 {
     Json::Reader reader;
@@ -144,24 +149,43 @@ void BenchmarkSuite::init(const std::string &configJsonStr,
 }
 
 void BenchmarkSuite::init(const Json::Value &configJson,
-                          std::shared_ptr<Client> clientFactory(const Json::Value &config),
+						  std::shared_ptr<DISB::Client> clientFactory(const Json::Value &config, const Json::Value &config_extra),
                           std::shared_ptr<Load> loadFactory(const Json::Value &config))
 {
     benchmarkTime = seconds(configJson["time"].asInt());
+	std::cout << "测试时间：" << benchmarkTime.count() << "s" << std::endl;
     for (const Json::Value &taskConfig : configJson["tasks"]) {
         std::string taskId = taskConfig["id"].asString();
-        std::shared_ptr<Client> client = clientFactory(taskConfig["client"]);
+        std::shared_ptr<Client> client = clientFactory(taskConfig["client"], taskConfig["chain"][0]);
         std::shared_ptr<Load> load = loadFactory(taskConfig["load"]);
+		bool is_head = taskConfig["chain"][0]["is_head"].asBool();
+		bool is_tear = taskConfig["chain"][0]["is_tear"].asBool();
+		std::vector<int32_t> chain_ids;
+		std::vector<std::string> chain_names;
+		for (const Json::Value &ChainConfig : taskConfig["chain"]) {
+			int32_t chain_id = ChainConfig["chain_id"].asInt();
+			std::string chain_name = ChainConfig["chain_name"].asString();
+			chain_ids.push_back(chain_id);
+			chain_names.push_back(chain_name);
+		}
+		/* 链式信息全部初始化完成（链名、链号、节点类型）*/
+		client->setAnalyzersChainInfo(is_head, is_tear, chain_ids, chain_names);
+		client->settaskId(taskId);
 
         // check if the factory method is correct
         if (client != nullptr && std::dynamic_pointer_cast<Client>(client) != nullptr
             && load != nullptr && std::dynamic_pointer_cast<Load>(load) != nullptr) {
-            
             client->init();
             client->initAnalyzers();
             load->init();
             tasks[taskId] = BenchmarkTask(taskId, client, load);
         }
+
+		std::cout << "chain names：" << std::endl;
+		for(auto &t : chain_names){
+			std::cout << "       " << t << std::endl;
+		}
+		std::cout << "task id：" << taskId << " 初始化完成\n" << std::endl;
     }
 
     for (auto &taskPair : tasks) {
@@ -192,13 +216,11 @@ void BenchmarkSuite::run(void loadCoordinator(const std::vector<LoadInfo> &loadI
         }
 
         for (int i = 0; i < WARMUP_TIME; ++ i) {
-            task.client->prepareInput();
             task.client->preprocess();
-            task.client->copyInput();
             task.client->infer();
-            task.client->copyOutput();
             task.client->postprocess();
         }
+		std::cout << task.id << " 热启动完成" << std::endl;
     }
 
     // 2. measure the stand alone latency of each client
@@ -207,11 +229,8 @@ void BenchmarkSuite::run(void loadCoordinator(const std::vector<LoadInfo> &loadI
         // sleep 100 ms to reduce influence between two tasks
         std::this_thread::sleep_for(microseconds(100000));
 
-        nanoseconds prepareInputLatencySum(0);
         nanoseconds preprocessLatencySum(0);
-        nanoseconds copyInputLatencySum(0);
         nanoseconds inferLatencySum(0);
-        nanoseconds copyOutputLatencySum(0);
         nanoseconds postprocessLatencySum(0);
 
         for (int i = 0; i < STANDALONE_LATENCY_MEASURE_TIME; ++i) {
@@ -222,19 +241,9 @@ void BenchmarkSuite::run(void loadCoordinator(const std::vector<LoadInfo> &loadI
             }
         
             auto begin = system_clock::now();
-            task.client->prepareInput();
-            auto end = system_clock::now();
-            prepareInputLatencySum += end - begin;
-
-            begin = system_clock::now();
             task.client->preprocess();
-            end = system_clock::now();
+            auto end = system_clock::now();
             preprocessLatencySum += end - begin;
-
-            begin = system_clock::now();
-            task.client->copyInput();
-            end = system_clock::now();
-            copyInputLatencySum += end - begin;
 
             begin = system_clock::now();
             task.client->infer();
@@ -242,24 +251,18 @@ void BenchmarkSuite::run(void loadCoordinator(const std::vector<LoadInfo> &loadI
             inferLatencySum += end - begin;
 
             begin = system_clock::now();
-            task.client->copyOutput();
-            end = system_clock::now();
-            copyOutputLatencySum += end - begin;
-
-            begin = system_clock::now();
             task.client->postprocess();
             end = system_clock::now();
             postprocessLatencySum += end - begin;
         }
 
-        task.standAloneLatency->prepareInputLatency = prepareInputLatencySum / STANDALONE_LATENCY_MEASURE_TIME;
         task.standAloneLatency->preprocessLatency = preprocessLatencySum / STANDALONE_LATENCY_MEASURE_TIME;
-        task.standAloneLatency->copyInputLatency = copyInputLatencySum / STANDALONE_LATENCY_MEASURE_TIME;
         task.standAloneLatency->inferLatency = inferLatencySum / STANDALONE_LATENCY_MEASURE_TIME;
-        task.standAloneLatency->copyOutputLatency = copyOutputLatencySum / STANDALONE_LATENCY_MEASURE_TIME;
         task.standAloneLatency->postprocessLatency = postprocessLatencySum / STANDALONE_LATENCY_MEASURE_TIME;
 
         task.client->setStandAloneLatency(task.standAloneLatency->sum());
+
+		std::cout << task.id << " 单模型基准测试完成" << std::endl;
     }
 
     // 3. coordinate
@@ -279,11 +282,157 @@ void BenchmarkSuite::run(void loadCoordinator(const std::vector<LoadInfo> &loadI
     for (auto &taskPair : tasks) {
         auto &task = taskPair.second;
         benchmarkThreads.emplace_back(&BenchmarkTask::runBenchmark, task, beginTime, endTime);
+		std::cout << task.id << " 任务线程创建完成" << std::endl;
     }
-    
+
+	std::cout <<  "线程id分别为：" << std::endl;
+    for (auto &thread : benchmarkThreads){
+		auto old_flags = std::cout.flags();
+	    std::cout << std::hex << std::showbase<< thread.get_id() << '\n';
+		// 3. 恢复原始状态（恢复为默认的 std::dec 十进制等）
+		std::cout.flags(old_flags);
+	}
+
     for (auto &thread : benchmarkThreads) {
         thread.join();
+	    std::cout << log_timestamp() << "线程运行结束"  << '\n';
     }
+}
+
+Json::Value BenchmarkSuite::getChainRecordReport(){
+    Json::Value report;
+
+	//report["chain_all_data"]
+	std::map<int32_t, pair_map*> head_records;
+	std::vector<pair_map*> tear_records;
+
+	std::vector<std::pair<int32_t, std::vector<Json::Value::Int64>>> processed_all_records;
+	/* time unit: us */
+	std::vector<std::pair<int32_t, Json::Value::Int64>> processed_avg_records;
+	std::vector<std::pair<int32_t, Json::Value::Int64>> processed_p99_records;
+	std::vector<std::pair<int32_t, Json::Value::Int64>> chain_throughputs;
+
+	std::vector<std::shared_ptr<chain_map>> chain_map_holder;
+    for (auto &taskPair : tasks) {
+		std::shared_ptr<Client> tmp_client = taskPair.second.client;
+		if(tmp_client->is_chain_head_inf()){
+			auto chain_map_tmp = tmp_client->get_chain_head_record();
+			chain_map_holder.push_back(chain_map_tmp);
+			for(auto &pair : *chain_map_tmp){
+				head_records[pair.first] = &pair;
+			}
+		}
+		if(tmp_client->is_chain_tear_inf()){
+			auto chain_map_tmp = tmp_client->get_chain_tear_record();
+			chain_map_holder.push_back(chain_map_tmp);
+			for(auto &pair : *chain_map_tmp){
+				tear_records.push_back(&pair);
+			}
+		}
+    }
+
+	for(auto pair : tear_records){
+		std::vector<Json::Value::Int64> tmp_array;
+		int32_t id = pair->first;
+		for(auto pair_m : pair->second){
+			int64_t s_num = pair_m.first;
+			
+			if(head_records[id]->second.find(s_num) != head_records[id]->second.end()){
+				nanoseconds tmp_time = pair_m.second - head_records[id]->second[s_num];
+				tmp_array.push_back((Json::Value::Int64)tmp_time.count()/THOUSAND);
+			}
+		}
+        double avgThroughput = double(pair->second.size()) / benchmarkTime.count();
+		chain_throughputs.push_back({id, avgThroughput});
+		processed_all_records.push_back({id, tmp_array});
+	}
+
+	for(auto &pair : processed_all_records){
+		Json::Value::Int64 avg_time;	
+		Json::Value::Int64 sum_time = 0;
+		for(auto data : pair.second){
+			sum_time += data;
+		}
+		avg_time = sum_time/pair.second.size();
+		processed_avg_records.push_back({pair.first, avg_time});
+	}
+
+	for (auto &record_pair : processed_all_records) {
+		int32_t id = record_pair.first;
+		auto &latencies = record_pair.second; // 获取时延数组
+
+		// 1. 边界检查：如果该 ID 没有采集到任何数据，赋 0
+		if (latencies.empty()) {
+			processed_p99_records.push_back({id, 0});
+			continue;
+		}
+
+		// 2. 计算 P99 对应的下标 (百分位 nearest rank 公式)
+		size_t p99_idx = static_cast<size_t>(std::ceil(latencies.size() * 0.99)) - 1;
+		if (p99_idx >= latencies.size()) {
+			p99_idx = latencies.size() - 1;
+		}
+
+		// 3. 提取 P99 值（推荐使用 std::nth_element，平均时间复杂度 O(N)，比全排序 std::sort 更高效）
+		std::nth_element(latencies.begin(), latencies.begin() + p99_idx, latencies.end());
+		Json::Value::Int64 p99_val = latencies[p99_idx];
+
+		// 4. 保存计算结果
+		processed_p99_records.push_back({id, p99_val});
+	}
+
+    Json::Value report_all_data;
+	report_all_data["type"] = "chain_all_time_data";
+
+	for(auto &pair : processed_all_records){
+		Json::Value report_all_tmp;
+		report_all_tmp["chain_id"] = pair.first;
+		Json::Value report_tmp;
+		for(auto data : pair.second){
+			report_tmp.append(data);
+		}
+		report_all_tmp["time(us)"] = report_tmp;
+		report_all_data["chain_data"].append(report_all_tmp);
+	}
+
+	report.append(report_all_data);
+
+    Json::Value report_avg_data;
+	report_avg_data["type"] = "chain_avg_time_data";
+
+	for(auto &pair : processed_avg_records){
+		Json::Value report_avg_tmp;
+		report_avg_tmp["chain_id"] = pair.first;
+		report_avg_tmp["time(us)"] = pair.second;
+		report_avg_data["chain_data"].append(report_avg_tmp);
+	}
+
+	report.append(report_avg_data);
+
+    Json::Value report_p99_data;
+	report_p99_data["type"] = "chain_p99_time_data";
+
+	for(auto &pair : processed_p99_records){
+		Json::Value report_p99_tmp;
+		report_p99_tmp["chain_id"] = pair.first;
+		report_p99_tmp["time(us)"] = pair.second;
+		report_p99_data["chain_data"].append(report_p99_tmp);
+	}
+
+	report.append(report_p99_data);
+
+    Json::Value report_throughput_data;
+	report_throughput_data["type"] = "chain_throughput_data";
+	for(auto &pair : chain_throughputs){
+		Json::Value report_throughput_tmp;
+		report_throughput_tmp["chain_id"] = pair.first;
+		report_throughput_tmp["Throughput"] = pair.second;
+		report_throughput_data["chain_data"].append(report_throughput_tmp);
+	}
+
+	report.append(report_throughput_data);
+
+	return report;
 }
 
 Json::Value BenchmarkSuite::generateReport()
@@ -297,7 +446,9 @@ Json::Value BenchmarkSuite::generateReport()
     for (auto &taskPair : tasks) {
         results.append(taskPair.second.client->generateReport());
     }
-    report["results"] = results;
+    report["model_results"] = results;
+
+	report["chain_result"] = getChainRecordReport();
 
     return report;
 }

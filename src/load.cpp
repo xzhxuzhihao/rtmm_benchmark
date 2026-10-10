@@ -21,25 +21,26 @@ using std::chrono::nanoseconds;
 
 void builtinLoadCoordinator(const std::vector<LoadInfo> &loadInfos)
 {
-    // if two or more periodic strategies has the same frequency and priority is 0
-    // they need to coordinate by setting launchDelay to avoid being launched at the same time
-    std::map<int, std::chrono::nanoseconds> delayMap;
     for (auto &loadInfo : loadInfos) {
         std::shared_ptr<PeriodicLoad> periodicLoad = std::dynamic_pointer_cast<PeriodicLoad>(loadInfo.load);
         if (periodicLoad == nullptr) {
             continue;
         }
 
-        int priority = periodicLoad->getPriority();
-        if (priority > 0) {
-            continue;
-        }
-
         nanoseconds delay = loadInfo.standAloneLatency->sum();
 
-        int freq = periodicLoad->getFrequency();
-        periodicLoad->setLaunchDelay(delayMap[freq]);
-        delayMap[freq] += delay;
+		// 1. 使用当前系统时间作为随机种子
+		auto seed = std::chrono::system_clock::now().time_since_epoch().count();
+		std::mt19937 gen(seed); 
+
+		// 2. 定义随机数分布范围 [0.0, delay.count()]
+		std::uniform_real_distribution<float> dis(0.0f, static_cast<float>(delay.count()));
+
+		// 3. 调用 dis(gen) 即可获取一个随机值
+		float random_float = dis(gen);
+		long random_val = static_cast<long>(random_float);
+
+        periodicLoad->setLaunchDelay(nanoseconds(random_val));
     }
 }
 

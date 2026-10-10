@@ -2,7 +2,9 @@ logs
 build
 install
 .vscode
+compile_commands.json
 
 *.plan
 *.DS_store
 *.tar.gz
+.cache
